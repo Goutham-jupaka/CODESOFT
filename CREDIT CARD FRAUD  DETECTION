@@ -1,0 +1,379 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, classification_report, roc_auc_score, roc_curve
+)
+import pickle
+import warnings
+warnings.filterwarnings('ignore')
+
+
+class FraudDetector:
+    """
+    Credit card fraud detection system using multiple machine learning algorithms.
+    Handles imbalanced data and provides detailed analysis.
+    """
+    
+    def __init__(self):
+        self.scaler = StandardScaler()
+        self.model = None
+        self.model_name = None
+        self.feature_names = None
+        
+    def load_data(self, filepath):
+        """
+        Load transaction data from CSV file
+        Expected columns: Time, V1-V28 (PCA features), Amount, Class
+        """
+        print("Loading transaction data...")
+        
+        try:
+            df = pd.read_csv(filepath)
+            print(f"Loaded {len(df)} transactions")
+            
+            # Check for required columns
+            if 'Class' not in df.columns:
+                raise ValueError("Dataset must contain 'Class' column (0=legitimate, 1=fraud)")
+            
+            return df
+        
+        except FileNotFoundError:
+            print(f"Error: File '{filepath}' not found")
+            return None
+        except Exception as e:
+            print(f"Error loading data: {str(e)}")
+            return None
+    
+    def analyze_dataset(self, df):
+        """
+        Provide initial analysis of the dataset
+        """
+        print("\n" + "="*70)
+        print("DATASET ANALYSIS")
+        print("="*70)
+        
+        # Basic info
+        print(f"\nTotal transactions: {len(df):,}")
+        print(f"Number of features: {df.shape[1] - 1}")
+        
+        # Class distribution
+        fraud_count = df['Class'].sum()
+        legitimate_count = len(df) - fraud_count
+        fraud_percentage = (fraud_count / len(df)) * 100
+        
+        print(f"\nClass Distribution:")
+        print(f"  Legitimate: {legitimate_count:,} ({100-fraud_percentage:.2f}%)")
+        print(f"  Fraudulent: {fraud_count:,} ({fraud_percentage:.2f}%)")
+        
+        if fraud_percentage < 1:
+            print(f"\n⚠ Warning: Highly imbalanced dataset ({fraud_percentage:.3f}% fraud)")
+            print("  Using appropriate evaluation metrics for imbalanced data")
+        
+        # Amount statistics
+        if 'Amount' in df.columns:
+            print(f"\nTransaction Amount Statistics:")
+            print(f"  Mean: ${df['Amount'].mean():.2f}")
+            print(f"  Median: ${df['Amount'].median():.2f}")
+            print(f"  Max: ${df['Amount'].max():.2f}")
+            
+            fraud_amount = df[df['Class'] == 1]['Amount'].sum()
+            print(f"\nTotal fraudulent amount: ${fraud_amount:,.2f}")
+        
+        # Check for missing values
+        missing = df.isnull().sum().sum()
+        if missing > 0:
+            print(f"\n⚠ Warning: {missing} missing values found")
+        else:
+            print("\n✓ No missing values")
+        
+        return df
+    
+    def prepare_data(self, df, test_size=0.3):
+        """
+        Prepare features and labels for training
+        Handles scaling and train-test split
+        """
+        print("\nPreparing data for training...")
+        
+        # Separate features and target
+        X = df.drop('Class', axis=1)
+        y = df['Class']
+        
+        self.feature_names = X.columns.tolist()
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42, stratify=y
+        )
+        
+        # Scale features (important for logistic regression)
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+        
+        print(f"Training set: {len(X_train):,} transactions")
+        print(f"Test set: {len(X_test):,} transactions")
+        
+        # Check class balance in splits
+        train_fraud = y_train.sum()
+        test_fraud = y_test.sum()
+        print(f"Training fraud cases: {train_fraud} ({train_fraud/len(y_train)*100:.2f}%)")
+        print(f"Test fraud cases: {test_fraud} ({test_fraud/len(y_test)*100:.2f}%)")
+        
+        return X_train_scaled, X_test_scaled, y_train, y_test, X_train, X_test
+    
+    def train_models(self, X_train, y_train, X_val, y_val):
+        """
+        Train multiple models and compare their performance
+        """
+        print("\n" + "="*70)
+        print("TRAINING MODELS")
+        print("="*70)
+        
+        # Define models with appropriate parameters for imbalanced data
+        models = {
+            'Logistic Regression': LogisticRegression(
+                max_iter=1000,
+                class_weight='balanced',
+                random_state=42
+            ),
+            'Decision Tree': DecisionTreeClassifier(
+                max_depth=10,
+                class_weight='balanced',
+                random_state=42
+            ),
+            'Random Forest': RandomForestClassifier(
+                n_estimators=100,
+                max_depth=10,
+                class_weight='balanced',
+                random_state=42,
+                n_jobs=-1
+            )
+        }
+        
+        results = {}
+        
+        for name, model in models.items():
+            print(f"\n{'='*70}")
+            print(f"Training {name}...")
+            print(f"{'='*70}")
+            
+            # Train model
+            model.fit(X_train, y_train)
+            
+            # Predictions
+            y_pred = model.predict(X_val)
+            y_proba = model.predict_proba(X_val)[:, 1] if hasattr(model, 'predict_proba') else None
+            
+            # Calculate metrics
+            accuracy = accuracy_score(y_val, y_pred)
+            precision = precision_score(y_val, y_pred)
+            recall = recall_score(y_val, y_pred)
+            f1 = f1_score(y_val, y_pred)
+            
+            # For imbalanced data, we prioritize recall (catching fraud) and F1 score
+            results[name] = {
+                'model': model,
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'predictions': y_pred,
+                'probabilities': y_proba
+            }
+            
+            # Print metrics
+            print(f"\nPerformance Metrics:")
+            print(f"  Accuracy:  {accuracy:.4f}")
+            print(f"  Precision: {precision:.4f} (When we predict fraud, how often are we right?)")
+            print(f"  Recall:    {recall:.4f} (What % of actual fraud do we catch?)")
+            print(f"  F1 Score:  {f1:.4f} (Balance between precision and recall)")
+            
+            # Show confusion matrix
+            cm = confusion_matrix(y_val, y_pred)
+            print(f"\nConfusion Matrix:")
+            print(f"  TN: {cm[0,0]:5d} | FP: {cm[0,1]:5d}")
+            print(f"  FN: {cm[1,0]:5d} | TP: {cm[1,1]:5d}")
+            print(f"  (TN=True Negative, FP=False Positive, FN=False Negative, TP=True Positive)")
+        
+        # Select best model based on F1 score (good for imbalanced data)
+        best_model_name = max(results, key=lambda x: results[x]['f1'])
+        self.model = results[best_model_name]['model']
+        self.model_name = best_model_name
+        
+        print("\n" + "="*70)
+        print(f"BEST MODEL: {best_model_name}")
+        print(f"F1 Score: {results[best_model_name]['f1']:.4f}")
+        print("="*70)
+        
+        return results
+    
+    def detailed_evaluation(self, X_test, y_test):
+        """
+        Provide detailed evaluation of the best model
+        """
+        print("\n" + "="*70)
+        print("DETAILED MODEL EVALUATION")
+        print("="*70)
+        
+        # Predictions
+        y_pred = self.model.predict(X_test)
+        
+        # Classification report
+        print("\nClassification Report:")
+        print(classification_report(y_test, y_pred, 
+                                   target_names=['Legitimate', 'Fraudulent']))
+        
+        # Confusion matrix with labels
+        cm = confusion_matrix(y_test, y_pred)
+        
+        print("\nDetailed Confusion Matrix:")
+        print(f"{'':20} {'Predicted Legitimate':>20} {'Predicted Fraud':>20}")
+        print(f"{'Actual Legitimate':20} {cm[0,0]:>20,} {cm[0,1]:>20,}")
+        print(f"{'Actual Fraud':20} {cm[1,0]:>20,} {cm[1,1]:>20,}")
+        
+        # Calculate costs (example: missing fraud is more expensive)
+        # Assume: False Negative costs $100, False Positive costs $5
+        false_negatives = cm[1, 0]
+        false_positives = cm[0, 1]
+        estimated_cost = (false_negatives * 100) + (false_positives * 5)
+        
+        print(f"\nError Analysis:")
+        print(f"  Missed Frauds (False Negatives): {false_negatives}")
+        print(f"  False Alarms (False Positives): {false_positives}")
+        print(f"  Estimated Cost Impact: ${estimated_cost:,.2f}")
+        print(f"    (Assuming $100 per missed fraud, $5 per false alarm)")
+        
+        # Feature importance for tree-based models
+        if hasattr(self.model, 'feature_importances_'):
+            print("\nTop 10 Most Important Features:")
+            importances = self.model.feature_importances_
+            indices = np.argsort(importances)[-10:][::-1]
+            
+            for i, idx in enumerate(indices, 1):
+                feature_name = self.feature_names[idx] if self.feature_names else f"Feature_{idx}"
+                print(f"  {i:2d}. {feature_name:15} {importances[idx]:.4f}")
+    
+    def predict_transaction(self, transaction_data):
+        """
+        Predict if a single transaction is fraudulent
+        
+        Args:
+            transaction_data: Dictionary or array with transaction features
+        
+        Returns:
+            prediction (0 or 1) and probability
+        """
+        if isinstance(transaction_data, dict):
+            # Convert dict to array in correct order
+            transaction_array = np.array([[transaction_data.get(f, 0) for f in self.feature_names]])
+        else:
+            transaction_array = np.array(transaction_data).reshape(1, -1)
+        
+        # Scale the features
+        transaction_scaled = self.scaler.transform(transaction_array)
+        
+        # Predict
+        prediction = self.model.predict(transaction_scaled)[0]
+        
+        # Get probability if available
+        if hasattr(self.model, 'predict_proba'):
+            probability = self.model.predict_proba(transaction_scaled)[0, 1]
+        else:
+            probability = None
+        
+        return prediction, probability
+    
+    def save_model(self, filepath='fraud_detector.pkl'):
+        """Save the trained model and scaler"""
+        print(f"\nSaving model to {filepath}...")
+        
+        model_data = {
+            'model': self.model,
+            'scaler': self.scaler,
+            'model_name': self.model_name,
+            'feature_names': self.feature_names
+        }
+        
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print("Model saved successfully!")
+    
+    def load_model(self, filepath='fraud_detector.pkl'):
+        """Load a pre-trained model"""
+        print(f"Loading model from {filepath}...")
+        
+        with open(filepath, 'rb') as f:
+            model_data = pickle.load(f)
+        
+        self.model = model_data['model']
+        self.scaler = model_data['scaler']
+        self.model_name = model_data['model_name']
+        self.feature_names = model_data['feature_names']
+        
+        print(f"Loaded {self.model_name} model successfully!")
+
+
+def main():
+    """Main execution function"""
+    print("="*70)
+    print("CREDIT CARD FRAUD DETECTION SYSTEM")
+    print("="*70)
+    
+    # Initialize detector
+    detector = FraudDetector()
+    
+    # Load data
+    df = detector.load_data('transactions.csv')
+    
+    if df is None:
+        print("\nError: Could not load data. Please ensure 'transactions.csv' exists.")
+        return
+    
+    # Analyze dataset
+    detector.analyze_dataset(df)
+    
+    # Prepare data
+    X_train, X_test, y_train, y_test, X_train_orig, X_test_orig = detector.prepare_data(df)
+    
+    # Train models
+    results = detector.train_models(X_train, y_train, X_test, y_test)
+    
+    # Detailed evaluation
+    detector.detailed_evaluation(X_test, y_test)
+    
+    # Save the model
+    detector.save_model()
+    
+    # Example prediction
+    print("\n" + "="*70)
+    print("EXAMPLE PREDICTION")
+    print("="*70)
+    
+    # Get a random transaction from test set
+    random_idx = np.random.randint(0, len(X_test))
+    sample_transaction = X_test_orig.iloc[random_idx].to_dict()
+    actual_label = y_test.iloc[random_idx]
+    
+    prediction, probability = detector.predict_transaction(sample_transaction)
+    
+    print(f"\nTransaction Analysis:")
+    print(f"  Actual Status: {'FRAUD' if actual_label == 1 else 'LEGITIMATE'}")
+    print(f"  Predicted: {'FRAUD' if prediction == 1 else 'LEGITIMATE'}")
+    if probability is not None:
+        print(f"  Fraud Probability: {probability*100:.2f}%")
+    print(f"  Result: {'✓ CORRECT' if prediction == actual_label else '✗ INCORRECT'}")
+    
+    print("\n" + "="*70)
+    print("Training complete! Model saved as 'fraud_detector.pkl'")
+    print("="*70)
+
+
+if __name__ == "__main__":
+    main()
