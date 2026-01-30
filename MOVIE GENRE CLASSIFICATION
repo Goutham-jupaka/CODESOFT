@@ -1,0 +1,262 @@
+import pandas as pd
+import numpy as np
+import re
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import pickle
+import warnings
+warnings.filterwarnings('ignore')
+
+
+class MovieGenreClassifier:
+    
+    
+    def __init__(self):
+        self.vectorizer = None
+        self.model = None
+        self.model_name = None
+        
+    def clean_text(self, text):
+        
+        if pd.isna(text):
+            return ""
+        
+        
+        text = str(text).lower()
+        
+        
+        text = re.sub(r'[^a-zA-Z\s]', ' ', text)
+        
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        return text
+    
+    def load_train_data(self, filepath):
+      
+        print("Loading training data...")
+        
+        data = []
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split(':::')
+                if len(parts) == 4:
+                    movie_id, title, genre, description = parts
+                    data.append({
+                        'id': movie_id.strip(),
+                        'title': title.strip(),
+                        'genre': genre.strip(),
+                        'description': description.strip()
+                    })
+        
+        df = pd.DataFrame(data)
+        print(f"Loaded {len(df)} training samples")
+        return df
+    
+    def load_test_data(self, filepath):
+        
+        print("Loading test data...")
+        
+        data = []
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split(':::')
+                if len(parts) == 3:
+                    movie_id, title, description = parts
+                    data.append({
+                        'id': movie_id.strip(),
+                        'title': title.strip(),
+                        'description': description.strip()
+                    })
+        
+        df = pd.DataFrame(data)
+        print(f"Loaded {len(df)} test samples")
+        return df
+    
+    def prepare_features(self, train_df):
+        """Prepare text features using TF-IDF"""
+        print("\nPreparing features...")
+        
+        
+        train_df['clean_desc'] = train_df['description'].apply(self.clean_text)
+        
+        
+        train_df['full_text'] = train_df['title'] + ' ' + train_df['clean_desc']
+        
+        
+        self.vectorizer = TfidfVectorizer(
+            max_features=5000,
+            min_df=2,
+            max_df=0.8,
+            ngram_range=(1, 2),
+            stop_words='english'
+        )
+        
+        
+        X = self.vectorizer.fit_transform(train_df['full_text'])
+        y = train_df['genre']
+        
+        print(f"Feature matrix shape: {X.shape}")
+        print(f"Number of unique genres: {y.nunique()}")
+        
+        return X, y
+    
+    def train_models(self, X_train, X_val, y_train, y_val):
+        
+        print("\nTraining models...")
+        
+        models = {
+            'Naive Bayes': MultinomialNB(alpha=0.1),
+            'Logistic Regression': LogisticRegression(max_iter=1000, C=1.0, random_state=42),
+            'Linear SVM': LinearSVC(max_iter=2000, C=0.5, random_state=42)
+        }
+        
+        results = {}
+        
+        for name, model in models.items():
+            print(f"\nTraining {name}...")
+            model.fit(X_train, y_train)
+            
+            
+            y_pred = model.predict(X_val)
+            accuracy = accuracy_score(y_val, y_pred)
+            
+            results[name] = {
+                'model': model,
+                'accuracy': accuracy
+            }
+            
+            print(f"{name} Validation Accuracy: {accuracy:.4f}")
+        
+        
+        best_model_name = max(results, key=lambda x: results[x]['accuracy'])
+        self.model = results[best_model_name]['model']
+        self.model_name = best_model_name
+        
+        print(f"\n{'='*50}")
+        print(f"Best Model: {best_model_name}")
+        print(f"Accuracy: {results[best_model_name]['accuracy']:.4f}")
+        print(f"{'='*50}")
+        
+        return results
+    
+    def evaluate_model(self, X_val, y_val):
+        
+        print("\nDetailed Evaluation:")
+        print("="*50)
+        
+        y_pred = self.model.predict(X_val)
+        
+        print("\nClassification Report:")
+        print(classification_report(y_val, y_pred))
+        
+        print("\nConfusion Matrix:")
+        print(confusion_matrix(y_val, y_pred))
+    
+    def predict(self, test_df):
+        
+        print("\nMaking predictions on test data...")
+        
+        
+        test_df['clean_desc'] = test_df['description'].apply(self.clean_text)
+        test_df['full_text'] = test_df['title'] + ' ' + test_df['clean_desc']
+        
+        
+        X_test = self.vectorizer.transform(test_df['full_text'])
+        
+      
+        predictions = self.model.predict(X_test)
+        
+        return predictions
+    
+    def save_model(self, filepath='movie_genre_model.pkl'):
+        """Save the trained model and vectorizer"""
+        print(f"\nSaving model to {filepath}...")
+        
+        model_data = {
+            'vectorizer': self.vectorizer,
+            'model': self.model,
+            'model_name': self.model_name
+        }
+        
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print("Model saved successfully!")
+    
+    def load_model(self, filepath='movie_genre_model.pkl'):
+        
+        print(f"Loading model from {filepath}...")
+        
+        with open(filepath, 'rb') as f:
+            model_data = pickle.load(f)
+        
+        self.vectorizer = model_data['vectorizer']
+        self.model = model_data['model']
+        self.model_name = model_data['model_name']
+        
+        print(f"Loaded {self.model_name} model successfully!")
+
+
+def main():
+    """Main execution function"""
+    print("="*50)
+    print("MOVIE GENRE CLASSIFICATION SYSTEM")
+    print("="*50)
+    
+    
+    classifier = MovieGenreClassifier()
+    
+    
+    train_df = classifier.load_train_data('train_data.txt')
+    
+    
+    X, y = classifier.prepare_features(train_df)
+    
+    
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    
+    print(f"\nTraining set size: {X_train.shape[0]}")
+    print(f"Validation set size: {X_val.shape[0]}")
+    
+    # Train models
+    results = classifier.train_models(X_train, X_val, y_train, y_val)
+    
+    # Evaluate best model
+    classifier.evaluate_model(X_val, y_val)
+    
+    # Save the model
+    classifier.save_model()
+    
+    # Load and predict on test data
+    test_df = classifier.load_test_data('test_data.txt')
+    predictions = classifier.predict(test_df)
+    
+    # Save predictions
+    test_df['predicted_genre'] = predictions
+    test_df[['id', 'title', 'predicted_genre']].to_csv(
+        'predictions.csv', index=False
+    )
+    
+    print("\n" + "="*50)
+    print("Predictions saved to 'predictions.csv'")
+    print("="*50)
+    
+    # Show sample predictions
+    print("\nSample Predictions:")
+    print("-"*50)
+    for idx, row in test_df.head(10).iterrows():
+        print(f"Title: {row['title']}")
+        print(f"Predicted Genre: {row['predicted_genre']}")
+        print(f"Description: {row['description'][:100]}...")
+        print("-"*50)
+
+
+if __name__ == "__main__":
+    main()
